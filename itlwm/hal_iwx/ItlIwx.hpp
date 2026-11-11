@@ -270,6 +270,7 @@ public:
     void    iwx_init_msix_hw(struct iwx_softc *);
     void    iwx_conf_msix_hw(struct iwx_softc *, int);
     int    iwx_start_hw(struct iwx_softc *);
+    int    iwx_flr_recover(struct iwx_softc *);
     void    iwx_stop_device(struct iwx_softc *);
     void    iwx_nic_config(struct iwx_softc *);
     int    iwx_nic_rx_init(struct iwx_softc *);

@@ -3214,6 +3214,39 @@ iwx_conf_msix_hw(struct iwx_softc *sc, int stopped)
                 IWX_MSIX_HW_INT_CAUSES_REG_HAP);
 }
 
+/*
+ * amd-fix: PCIe Function Level Reset of the adapter, preserving the
+ * config space (BARs, MSI) that IOPCIFamily programmed. Returns 1 if the
+ * device answers again afterwards.
+ */
+int ItlIwx::
+iwx_flr_recover(struct iwx_softc *sc)
+{
+    IOPCIDevice *dev = sc->sc_pcitag;
+    uint32_t dcap = dev->configRead32(sc->sc_cap_off + PCI_PCIE_DCAP);
+    if (!(dcap & (1U << 28))) {
+        XYLog("%s: FLR not supported (devcap 0x%08x)\n", DEVNAME(sc), dcap);
+        return 0;
+    }
+    dev->saveDeviceState();
+    uint16_t dcsr = dev->configRead16(sc->sc_cap_off + PCI_PCIE_DCSR);
+    dev->configWrite16(sc->sc_cap_off + PCI_PCIE_DCSR, dcsr | 0x8000);
+    IOSleep(150);
+    dev->restoreDeviceState();
+    dev->setMemoryEnable(true);
+    dev->setBusMasterEnable(true);
+    dev->configWrite8(0x41, 0);
+    IOSleep(10);
+    uint32_t rev = IWX_READ(sc, IWX_CSR_HW_REV);
+    XYLog("%s: after FLR: HW_REV=0x%08x GP_CNTRL=0x%08x\n", DEVNAME(sc),
+          rev, IWX_READ(sc, IWX_CSR_GP_CNTRL));
+    if (rev == 0xffffffff)
+        return 0;
+    if (rev != 0)
+        sc->sc_hw_rev = (rev & 0xfff0) | (IWX_CSR_HW_REV_STEP(rev << 2) << 2);
+    return 1;
+}
+
 int ItlIwx::
 iwx_start_hw(struct iwx_softc *sc)
 {
@@ -3255,11 +3288,26 @@ iwx_start_hw(struct iwx_softc *sc)
     }
     
     err = iwx_apm_init(sc);
+    /*
+     * amd-fix: an AX210 left half-initialised by a previous OS/firmware
+     * never raises MAC_CLOCK_READY (and reads CSR_HW_REV as 0). Recover it
+     * with a PCIe Function Level Reset, then redo the init sequence.
+     */
+    for (int attempt = 1; err == ETIMEDOUT && attempt <= 3; attempt++) {
+        XYLog("%s: clock not ready, FLR recovery attempt %d\n", DEVNAME(sc), attempt);
+        if (!iwx_flr_recover(sc))
+            break;
+        if (iwx_prepare_card_hw(sc))
+            continue;
+        IWX_SETBITS(sc, IWX_CSR_RESET, IWX_CSR_RESET_REG_FLAG_SW_RESET);
+        DELAY(5000);
+        err = iwx_apm_init(sc);
+    }
     if (err)
         return err;
-    
+
     iwx_init_msix_hw(sc);
-    
+
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
     
