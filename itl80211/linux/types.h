@@ -110,10 +110,23 @@
 
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+void itl_trace(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+#ifdef __cplusplus
+}
+class IOService;
+void itl_trace_publish(IOService *service, const char *key);
+#endif
+
+// amd-fix: XYLog also goes to an in-memory ring that is published to ioreg
+// ("ItlwmTrace" on the PCI device), because kprintf output is invisible
+// without a serial console.
 #define XYLog(fmt, x...)\
 do\
 {\
-kprintf("%s: " fmt, "itlwm", ##x);\
+itl_trace("%s: " fmt, "itlwm", ##x);\
 }while(0)
 
 typedef UInt8  u8;

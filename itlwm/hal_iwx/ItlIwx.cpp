@@ -148,11 +148,14 @@ bool ItlIwx::attach(IOPCIDevice *device)
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
 #ifdef AIRPORT_VTD
-    if (!prepareDma(device, 36))
+    if (!prepareDma(device, 36)) {
+        XYLog("ItlIwx::attach: prepareDma(36) failed\n");
         return false;
+    }
     pci.pa_dmat = dmaArena;
 #endif
     if (!iwx_attach(&com, &pci)) {
+        XYLog("ItlIwx::attach: iwx_attach failed\n");
         detach(device);
         releaseAll();
         return false;

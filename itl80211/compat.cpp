@@ -22,6 +22,58 @@
 #include <sys/random.h>
 #include <sys/param.h>
 #include <sys/proc.h>
+#include <stdarg.h>
+#include <linux/types.h>
+#include <libkern/libkern.h>
+#include <IOKit/IOLib.h>
+#include <IOKit/IOService.h>
+#include <libkern/c++/OSString.h>
+
+// amd-fix: in-memory trace ring for XYLog. kprintf only reaches a serial
+// console, so the ring is copied into an ioreg property (see itl_trace_publish).
+#define ITL_TRACE_SIZE 32768u
+static char itl_trace_buf[ITL_TRACE_SIZE];
+static volatile SInt32 itl_trace_pos;
+
+extern "C" void itl_trace(const char *fmt, ...)
+{
+    char line[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+        return;
+    if (n >= (int)sizeof(line))
+        n = (int)sizeof(line) - 1;
+    kprintf("%s", line);
+    UInt32 start = (UInt32)OSAddAtomic(n, &itl_trace_pos);
+    for (int i = 0; i < n; i++)
+        itl_trace_buf[(start + (UInt32)i) % ITL_TRACE_SIZE] = line[i];
+}
+
+void itl_trace_publish(IOService *service, const char *key)
+{
+    if (!service || !key)
+        return;
+    UInt32 pos = (UInt32)itl_trace_pos;
+    UInt32 len = pos < ITL_TRACE_SIZE ? pos : ITL_TRACE_SIZE;
+    char *out = (char *)IOMalloc(len + 1);
+    if (!out)
+        return;
+    UInt32 first = pos - len;
+    for (UInt32 i = 0; i < len; i++) {
+        char c = itl_trace_buf[(first + i) % ITL_TRACE_SIZE];
+        out[i] = c ? c : ' ';
+    }
+    out[len] = '\0';
+    OSString *str = OSString::withCString(out);
+    if (str) {
+        service->setProperty(key, str);
+        str->release();
+    }
+    IOFree(out, len + 1);
+}
 
 OSDefineMetaClassAndStructors(pci_intr_handle, OSObject)
 

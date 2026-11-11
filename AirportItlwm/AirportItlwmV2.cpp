@@ -265,9 +265,17 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
+    // amd-fix: whatever start() returns, copy the XYLog trace into ioreg on the
+    // PCI device (it outlives a failed AirportItlwm instance).
+    struct ItlTraceGuard {
+        IOService *nub;
+        ~ItlTraceGuard() { itl_trace_publish(nub, "ItlwmTrace"); }
+    } traceGuard = { pciNub };
 #if __IO80211_TARGET == __MAC_15_2
-    if (version_major != 24 || version_minor < 2)
+    if (version_major != 24 || version_minor < 2) {
+        XYLog("start: unsupported kernel %d.%d\n", version_major, version_minor);
         return false;
+    }
 #endif
     XYLog("%s\n", __PRETTY_FUNCTION__);
     struct IOSkywalkEthernetInterface::RegistrationInfo registInfo;
@@ -278,11 +286,13 @@ bool AirportItlwm::start(IOService *provider)
     setProperty("DriverKitDriver", kOSBooleanFalse);
 #ifdef AIRPORT_WCL
     if (!initCCLogs()) {
+        XYLog("start: initCCLogs failed\n");
         releaseAll();
         return false;
     }
 #endif
     if (!super::start(provider)) {
+        XYLog("start: IO80211Controller::start failed\n");
 #ifdef AIRPORT_WCL
         releaseAll();
 #endif
@@ -292,12 +302,17 @@ bool AirportItlwm::start(IOService *provider)
     pciNub->setIOEnable(true);
     pciNub->setMemoryEnable(true);
     pciNub->configWrite8(0x41, 0);
+    XYLog("start: PCI cmd=0x%04x status=0x%04x vid/did=0x%08x bar0=0x%08x\n",
+          pciNub->configRead16(kIOPCIConfigCommand), pciNub->configRead16(kIOPCIConfigStatus),
+          pciNub->configRead32(kIOPCIConfigVendorID), pciNub->configRead32(kIOPCIConfigBaseAddress0));
     if (pciNub->requestPowerDomainState(kIOPMPowerOn,
                                         (IOPowerConnection *) getParentEntry(gIOPowerPlane), IOPMLowestState) != IOPMNoErr) {
+        XYLog("start: requestPowerDomainState failed\n");
         super::stop(provider);
         return false;
     }
     if (initPCIPowerManagment(pciNub) == false) {
+        XYLog("start: initPCIPowerManagment failed\n");
         super::stop(pciNub);
         return false;
     }

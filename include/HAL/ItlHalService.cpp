@@ -113,8 +113,11 @@ free()
 #ifdef AIRPORT_VTD
 bool ItlHalService::prepareDma(IOPCIDevice *device, uint8_t addressBits)
 {
-    if (dmaArena || !mainWorkLoop || mainWorkLoop->inGate())
+    if (dmaArena || !mainWorkLoop || mainWorkLoop->inGate()) {
+        XYLog("prepareDma: guard arena=%d workloop=%d inGate=%d\n", dmaArena != nullptr,
+              mainWorkLoop != nullptr, mainWorkLoop ? (int)mainWorkLoop->inGate() : -1);
         return false;
+    }
     dmaArena = ItlDmaArena::create(device, controller, addressBits);
     return dmaArena != nullptr;
 }

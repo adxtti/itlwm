@@ -9,6 +9,7 @@
 #include "ItlDma.hpp"
 #include <IOKit/IOLib.h>
 #include <libkern/c++/OSBoolean.h>
+#include <linux/types.h>
 
 ItlDmaArena *ItlDmaArena::create(IOPCIDevice *device, IOService *owner, uint8_t bits)
 {
@@ -24,14 +25,16 @@ ItlDmaArena *ItlDmaArena::create(IOPCIDevice *device, IOService *owner, uint8_t 
 
 bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bits)
 {
-    if (!pci || !controller || (bits != 36 && bits != 64))
+    if (!pci || !controller || (bits != 36 && bits != 64)) {
+        XYLog("DMA: bad args bits=%u\n", bits);
         return false;
+    }
     device = pci;
     device->retain();
     owner = controller;
     owner->setProperty("IOPCIUseDeviceMapper", kOSBooleanTrue);
     if (!device->open(owner)) {
-        IOLog("AirportItlwm: DMA could not open PCI device\n");
+        XYLog("DMA: DMA could not open PCI device\n");
         return false;
     }
     opened = true;
@@ -39,7 +42,7 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
     const char *mode = "device";
     if (!mapper) {
         if (device->getProperty("iommu-parent")) {
-            IOLog("AirportItlwm: DMA device mapper unavailable\n");
+            XYLog("DMA: DMA device mapper unavailable\n");
             return false;
         }
         IOMapper::checkForSystemMapper();
@@ -49,8 +52,10 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
         mode = mapper ? "system" : "direct";
     }
     lock = IOSimpleLockAlloc();
-    if (!lock)
+    if (!lock) {
+        XYLog("DMA: lock alloc failed\n");
         return false;
+    }
 
     const uint64_t mask = (bits == 64 ? UINT64_MAX : ((1ULL << bits) - 1)) & ~(uint64_t(PageSize) - 1);
     for (uint32_t i = 0; i < BlockCount; i++) {
@@ -58,15 +63,21 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
         block.memory = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
             kIODirectionInOut | kIOMemoryHostPhysicallyContiguous | kIOMemoryMapperNone,
             BlockSize, mask);
-        if (!block.memory)
+        if (!block.memory) {
+            XYLog("DMA: contiguous alloc failed at block %u\n", i);
             return false;
-        if (block.memory->prepare() != kIOReturnSuccess)
+        }
+        if (block.memory->prepare() != kIOReturnSuccess) {
+            XYLog("DMA: prepare failed at block %u\n", i);
             return false;
+        }
         block.prepared = true;
         block.command = IODMACommand::withSpecification(kIODMACommandOutputHost64,
             bits, BlockSize, IODMACommand::kMapped, BlockSize, PageSize, mapper);
-        if (!block.command || block.command->setMemoryDescriptor(block.memory) != kIOReturnSuccess)
+        if (!block.command || block.command->setMemoryDescriptor(block.memory) != kIOReturnSuccess) {
+            XYLog("DMA: DMA command setup failed at block %u\n", i);
             return false;
+        }
         IODMACommand::Segment64 segment = {};
         uint64_t offset = 0;
         uint32_t count = 1;
@@ -75,13 +86,15 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
             (segment.fIOVMAddr & (PageSize - 1)) ||
             segment.fIOVMAddr > UINT64_MAX - (BlockSize - 1) ||
             (bits < 64 && ((segment.fIOVMAddr + BlockSize - 1) >> bits))) {
-            IOLog("AirportItlwm: DMA arena segment constraints failed at block %u\n", i);
+            XYLog("DMA: DMA arena segment constraints failed at block %u\n", i);
             return false;
         }
         block.address = segment.fIOVMAddr;
         block.vaddr = block.memory->getBytesNoCopy();
-        if (!block.vaddr)
+        if (!block.vaddr) {
+            XYLog("DMA: no vaddr at block %u\n", i);
             return false;
+        }
     }
 #if __IO80211_TARGET == __MAC_15_2
     owner->setProperty("ItlwmDMARevision", "sequoia-vtd-1");
@@ -91,7 +104,7 @@ bool ItlDmaArena::initialize(IOPCIDevice *pci, IOService *controller, uint8_t bi
     owner->setProperty("ItlwmDMAMapper", mode);
     owner->setProperty("ItlwmDMAAddressBits", bits, 32);
     owner->setProperty("ItlwmDMAPoolBytes", BlockCount * BlockSize, 32);
-    IOLog("AirportItlwm: DMA mapper=%s bits=%u pool=%u MiB\n", mode, bits, BlockCount);
+    XYLog("DMA: DMA mapper=%s bits=%u pool=%u MiB\n", mode, bits, BlockCount);
     return true;
 }
 
@@ -139,7 +152,7 @@ bool ItlDmaArena::allocate(uint32_t size, uint32_t alignment, ItlDmaBuffer &buff
     uint32_t used = usedPages;
     IOSimpleLockUnlock(lock);
     if (failure == 1 || !(failure & (failure - 1)))
-        IOLog("AirportItlwm: DMA pool exhausted size=%u used=%u failures=%u\n", size, used * PageSize, failure);
+        XYLog("DMA: DMA pool exhausted size=%u used=%u failures=%u\n", size, used * PageSize, failure);
     return false;
 }
 
@@ -197,7 +210,7 @@ void ItlDmaArena::reclaim()
 
 void ItlDmaArena::destroy()
 {
-    IOLog("AirportItlwm: DMA teardown used=%u high-water=%u failures=%u\n",
+    XYLog("DMA: DMA teardown used=%u high-water=%u failures=%u\n",
         usedPages * PageSize, highWaterPages * PageSize, failures);
     if (opened)
         device->setBusMasterEnable(false);
